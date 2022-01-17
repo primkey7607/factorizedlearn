@@ -85,7 +85,7 @@ class agg_dataset:
         
         self.X = [self.name + ':' + x for x in self.X]
     
-    def load_seller(self, data, dimensions, name, feature_transform = True):
+    def load_seller(self, data, dimensions, name, feature_transform = True, standardize = False):
         self.data = data
         self.dimensions = dimensions
         self.name = name
@@ -108,6 +108,9 @@ class agg_dataset:
             cond, col = self.is_numeric(att, 0.3, 2)
             if cond:
                 self.data[att] = col
+                if standardize:
+                    self.data[att] = (self.data[att] - self.data[att].mean())/(self.data[att].std())
+                
                 atts.append(att)
                 if feature_transform:
                     self.data["log" + att] = np.log(self.data[att])
@@ -243,7 +246,7 @@ def mean_squared_error(cov_matrix, features, result, parameter):
 
 def r2(cov_matrix, features, result, parameter):
     result =  1 - square_error(cov_matrix, features, result, parameter)/total_sum_of_square(cov_matrix, result)
-    if result > 1:
+    if result > 2:
         # overflow
         return -1
     return result
@@ -268,6 +271,7 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
     right_attributes = aggdata2.X
     right_tablename = aggdata2.name
     
+    # if you only want to augment part of attributes (that are predictive)
     if len(right_attrs) > 0:
         kept_cols = []
         for col in agg2.columns:
@@ -281,7 +285,7 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
         agg2 = agg2[kept_cols + ['cov:c']]
         right_attributes = right_attrs
     
-    
+    # wheter join on index
     if left_inp:
         join = pd.merge(agg1, agg2, how='left', left_on=dimension, right_index=True)
     else:
