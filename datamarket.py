@@ -171,7 +171,7 @@ class agg_dataset:
         if agg_data.name in self.datasets:
             print("already absorbed this data")
             return
-        
+            
         self.data = connect(self, agg_data, dimension, True, attrs)
         
         for d in self.dimensions:
