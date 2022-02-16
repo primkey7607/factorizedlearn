@@ -171,7 +171,7 @@ class agg_dataset:
         if agg_data.name in self.datasets:
             print("already absorbed this data")
             return
-        
+            
         self.data = connect(self, agg_data, dimension, True, attrs)
         
         for d in self.dimensions:
@@ -354,3 +354,32 @@ def select_features(train, test, seller, dimension, k):
         final_r2 = best_r2
 #         print(i, best_r2, cur_atts)
     return cur_atts, final_r2
+
+
+# return the coefficients of features and a constant 
+def ridge_linear_regression(cov_matrix, features, result, alpha):
+    a = np.empty([len(features) + 1, len(features) + 1])
+    b = np.empty(len(features) + 1)
+    
+    for i in range(len(features)):
+        for j in range(len(features)):
+            if 'cov:Q:' + features[i] + ","+ features[j] in cov_matrix:
+                a[i][j] = cov_matrix['cov:Q:' + features[i] + ","+ features[j]]
+            else:
+                a[i][j] = cov_matrix['cov:Q:' + features[j] + ","+ features[i]]
+        if i == j:
+            a[i][i] += alpha
+    
+    for i in range(len(features)):
+        a[i][len(features)] = cov_matrix['cov:s:' + features[i]]
+        a[len(features)][i] = cov_matrix['cov:s:' + features[i]]
+        if 'cov:Q:' + result + "," + features[i] in cov_matrix:
+            b[i] = cov_matrix['cov:Q:' + result + "," + features[i]]
+        else:
+            b[i] = cov_matrix['cov:Q:' + features[i] + "," + result]
+    
+    b[len(features)] = cov_matrix['cov:s:' + result]
+    
+    a[len(features)][len(features)] = cov_matrix['cov:c']
+#     print(a,b)
+    return np.linalg.solve(a, b)

@@ -1,0 +1,34 @@
+#!/bin/bash
+
+UNIS_FILE=$1
+
+CREDENTIALS_FILE=credentials.txt
+
+SERVER=w4111.cisxo09blonu.us-east-1.rds.amazonaws.com
+
+USER=ewu
+
+# createdb proj1part2 -h w4111.cisxo09blonu.us-east-1.rds.amazonaws.com -U staffs19 w4111
+
+# psql -h w4111.cisxo09blonu.us-east-1.rds.amazonaws.com -U ewu -c "REVOKE ALL ON SCHEMA public FROM PUBLIC" proj1part2
+
+export PGPASSWORD='d5QBEdo4DQ6!2O'
+
+while read uni; do
+
+    PASSW=$(cat /dev/urandom | LC_CTYPE=C tr -dc '0-9' | fold -w 4 | head -n 1)
+
+    echo "${uni} ${PASSW}" >> ${CREDENTIALS_FILE}
+
+    psql -h ${SERVER} -U ${USER} -c "CREATE USER ${uni} WITH PASSWORD '${PASSW}'" proj1part2
+
+    psql -h ${SERVER} -U ${USER} -c "GRANT ${uni} TO ${USER}" proj1part2
+
+    
+    psql -h ${SERVER} -U ${USER} -c "CREATE SCHEMA AUTHORIZATION ${uni}" proj1part2
+
+    psql -h ${SERVER} -U ${USER} -c "GRANT ALL PRIVILEGES ON SCHEMA ${uni} TO ${uni}" proj1part2
+
+    psql -h ${SERVER} -U ${USER} -c "GRANT USAGE ON LANGUAGE sql TO ${uni}" proj1part2
+
+done < $UNIS_FILE
