@@ -12,61 +12,87 @@ from sklearn.linear_model import LinearRegression
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_squared_error
 from sklearn.metrics import r2_score
+from sklearn import *
+import autosklearn.regression
+import sklearn.datasets
+import sklearn.metrics
+import autosklearn.regression
 
+
+# Given a gram matrix semi-ring, normalize it
 def normalize(cov):
     cols = []
     
     if isinstance(cov, pd.DataFrame):
         cols = cov.columns
+    # this is for the final semiring, which is reduced to a single np array
     else:
         cols = list(cov.axes[0])
         
     for col in cols:
         if col != 'cov:c':
             cov[col] = cov[col]/cov['cov:c']
+    
+    if isinstance(cov, pd.DataFrame):
+        cov.rename(columns={'cov:c':'cov:c_old'}, inplace=True)
+        
     cov['cov:c'] = 1
     return cov
 
 class agg_dataset:
-    def set_meta(self, data, X, y, dimensions, name):
+    def set_meta(self, data, X, dimensions, name):
         self.data = data
         self.dimensions = dimensions
-        self.y = y
-        self.X =  [self.y] + X
+        self.X =  X
         self.name = name
         self.datasets = set()
         self.datasets.add(self.name)
-        
-    def load_buyer(self, data, X, y, dimensions, name):
-        self.data = data
-        self.dimensions = dimensions
-        self.X = X
-        self.y = y
-        self.name = name
-        
+    
+    # process target variable
+    # unlike features, we want to *remove* all tuples whose target variable is null
+    def process_target(self, y):
         # don't impute y
-        self.to_numeric(self.y, False)
-        for x in self.X:
-            self.to_numeric(x, False)
-        
-        self.X =  [self.y] + self.X
-        
+        self.to_numeric(y)
+        self.remove_null(y)
+    
+    # dimensions is a list of list of attributes 
+    # dedup_dimensions get the set of all attributes in dimensions
+    def get_deduplicated_dimension(self):
         dedup_dimensions = set()
-        for d in dimensions:
+        for d in self.dimensions:
             if isinstance(d, list):
                 dedup_dimensions.update(d)
             else:
                 dedup_dimensions.add(d)
-        dedup_dimensions = list(dedup_dimensions)
-        
+        self.dedup_dimensions = list(dedup_dimensions)
+    
+    # remove redundant columns not for ml
+    def remove_redundant_columns(self):
         # project out attributes except x, y, dim
-        self.data = self.data[self.X  + dedup_dimensions]
+        self.data.drop(self.data.columns.difference(self.X  + self.dedup_dimensions), axis=1, inplace=True)
+        # Note that the commented codes is not efficient, as it creates a view
+        # self.data = self.data[self.X  + self.dedup_dimensions]
+    
+    # load data (in the format of dataframe)
+    # user provides dimensions (these dimensions will be pre-aggregated)
+    # name should be unique across datasets
+    def load(self, data, X, dimensions, name):
+        self.data = data
+        self.dimensions = dimensions
+        self.X = X
+        self.name = name
         
+        self.get_deduplicated_dimension()
+        
+        # all the datasets it contains
+        # this is useful for buyer when it has augmented by many seller datasets
         self.datasets = set()
         self.datasets.add(self.name)
-        
     
+    # compute the semi-ring aggregation for each dimension
+    # norm is "whether the semi-ring aggregation is normalized"
     def compute_agg(self, norm = False):
+        # build semi-ring structure
         self.lift(self.name, self.X)
         
         self.agg_dimensions = dict()
@@ -85,77 +111,73 @@ class agg_dataset:
         
         self.X = [self.name + ':' + x for x in self.X]
     
-    def load_seller(self, data, dimensions, name, feature_transform = True, standardize = False):
-        self.data = data
-        self.dimensions = dimensions
-        self.name = name
-        
-                
-        dedup_dimensions = set()
-        for d in dimensions:
-            if isinstance(d, list):
-                dedup_dimensions.update(d)
-            else:
-                dedup_dimensions.add(d)
-        dedup_dimensions = list(dedup_dimensions)
-        
-        
-        # find numeric attributes as features
+    # iterate all attributes and find candidate features
+    def find_features(self):
         atts = []
         for att in self.data.columns:
-            if att in dedup_dimensions:
+            if att in self.dedup_dimensions or att in self.X:
                 continue
-            cond, col = self.is_numeric(att, 0.3, 2)
-            if cond:
-                self.data[att] = col
-                if standardize:
-                    self.data[att] = (self.data[att] - self.data[att].mean())/(self.data[att].std())
-                
+ 
+            if self.is_features(att, 0.3, 5):
                 atts.append(att)
-                if feature_transform:
-                    self.data["log" + att] = np.log(self.data[att])
-                    self.data["sq" + att] = np.square(self.data[att])
-                    self.data["cbr" + att] = np.cbrt(self.data[att])
-
-                    atts.append("log" + att)
-                    atts.append("sq" + att)
-                    atts.append("cbr" + att)
-
-        self.X = atts
-
-        
-        # project out attributes except x, y, dim
-        self.data = self.data[self.X + dedup_dimensions]
-
-    def is_numeric(self, att, impute_rate, cardinality):
-        col = pd.to_numeric(self.data[att],errors="coerce")
-        nan_count = sum(np.isnan(col))
-        unique_count = len(col.unique())
-        if nan_count/len(self.data) < impute_rate and unique_count/len(self.data) < cardinality:
-            mean_value = col.mean()
-            col.fillna(value=mean_value, inplace=True)
-            return True, col
-        else:
-            return False, col
+                self.impute_mean(att)
+                
+        self.X += atts
     
-    def to_numeric(self, att, impute=True, impute_rate = 1):
+    # try to parse the column into feature and decide whether it is a feature
+    # decided by two criterions: 1. percentage of missing value is below missing_threshold 2. # of distinct values is larger than distinct_threshold
+    def is_features(self, att, missing_threshold, distinct_threshold):
+        # parse attribute to numeric
+        self.to_numeric(att)
+        
+        col = self.data[att]
+        missing = sum(np.isnan(col))/len(self.data)
+        distinct = len(col.unique())
+        
+        if missing < missing_threshold and distinct > distinct_threshold:
+            return True
+        else:
+            return False
+    
+    def to_numeric_and_impute_all(self):
+        for att in self.X:
+            self.to_numeric(att)
+            self.impute_mean(att)
+    
+    # this is the function to transform an attribute to number
+    def to_numeric(self, att):
         # parse attribute to numeric
         self.data[att] = pd.to_numeric(self.data[att],errors="coerce")
-        # count the number of nan
-        nan_count = sum(np.isnan(self.data[att]))
-        
-        if impute:
-            # impute error only if missing rate is not above threshold
-            if nan_count/len(self.data) < impute_rate:
-                mean_value=self.data[att].mean()
-                self.data[att].fillna(value=mean_value, inplace=True)
-                return True
-            else:
-                return False
-        else:
-            # else, remove records with missing value
-            self.data = self.data[~np.isnan(self.data[att])]
     
+    def impute_mean(self, att):
+        mean_value=self.data[att].mean()
+        self.data[att].fillna(value=mean_value, inplace=True)
+    
+    def remove_null(self, att):
+        self.data.dropna(subset=[att],inplace=True)
+    
+    def standardize_all(self):
+        for att in self.X:
+            self.standardize(att)
+    
+    def standardize(self, att):
+        self.data[att] = (self.data[att] - self.data[att].mean())/(self.data[att].std())
+        
+    def transform(self):
+        for att in self.X:
+            self.transform(att)
+    
+    # for now, only square
+    # please comment out codes if you want more transformations
+    def transform(self, att):
+#         self.data["log" + att] = np.log(self.data[att])
+        self.data["sq" + att] = np.square(self.data[att])
+#         self.data["cbr" + att] = np.cbrt(self.data[att])
+#         atts.append("log" + att)
+        self.X.append("sq" + att)
+#         atts.append("cbr" + att)
+    
+    # build gram matrix semi-ring
     def lift(self, tablename, attributes):
         self.data['cov:c'] = 1
 
@@ -254,6 +276,8 @@ def r2(cov_matrix, features, result, parameter):
 def adjusted_r2(cov_matrix, features, result, parameter):
     return 1 - (cov_matrix['cov:c']-1)*(1 - r2(cov_matrix, features, result, parameter))/(cov_matrix['cov:c'] - len(parameter) - 1)
 
+# left_inp is whether we join of index of aggdata1 (index has good performance. however no index during absorption)
+# specify right_attrs if for right table, only part of attributes are involved
 def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
     
     if isinstance(dimension, list):
@@ -275,6 +299,7 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
     if len(right_attrs) > 0:
         kept_cols = []
         for col in agg2.columns:
+            # cov has multiple names
             names = col[6:].split(",")
             match = True
             for name in names:
@@ -287,7 +312,7 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
     
     # wheter join on index
     if left_inp:
-        join = pd.merge(agg1, agg2, how='left', left_on=dimension, right_index=True)
+        join = pd.merge(agg1.set_index(dimension), agg2, how='left', left_index=True, right_index=True)
     else:
         join = pd.merge(agg1, agg2, how='left', left_index=True, right_index=True)
 #         join = pd.merge(agg1, agg2, how='inner', left_index=True, right_index=True)
@@ -295,7 +320,6 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
     join = join.rename(columns = {'cov:c_x':'cov:c'})
     
     right_cov = aggdata2.covariance
-
     
     # fill in nan
     for att2 in right_attributes:
@@ -323,7 +347,7 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
     
     return join
 
-def select_features(train, test, seller, dimension, k):
+def select_features(train, test, seller, dimension, k, target):
     join_test = connect(test, seller, dimension)
     join_train = connect(train, seller, dimension)
 
@@ -336,14 +360,14 @@ def select_features(train, test, seller, dimension, k):
         best_r2 = 0
         best_att = -1
         for att in train.X + seller.X:
-            if att in cur_atts or att == train.name + ":" + train.y:
+            if att in cur_atts or att == train.name + ":" + target:
                 continue
             # maybe singular
             try:
-                parameter = linear_regression(join_train_cov, cur_atts + [att], train.name + ":" + train.y)
+                parameter = linear_regression(join_train_cov, cur_atts + [att], train.name + ":" + target)
             except:
                 continue
-            cur_r2 = r2(join_test_cov, cur_atts + [att], train.name + ":" + train.y, parameter)
+            cur_r2 = r2(join_test_cov, cur_atts + [att], train.name + ":" + target, parameter)
     #         print(cur_r2, att)
             if cur_r2 > best_r2:
                 best_r2 = cur_r2
@@ -383,3 +407,9 @@ def ridge_linear_regression(cov_matrix, features, result, alpha):
     a[len(features)][len(features)] = cov_matrix['cov:c']
 #     print(a,b)
     return np.linalg.solve(a, b)
+
+def split_mask(length):
+    return np.random.rand(length)
+
+def cross_mask(length, classes):
+    return np.random.choice(classes, length)
