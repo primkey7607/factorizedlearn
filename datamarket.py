@@ -20,7 +20,7 @@ import autosklearn.regression
 
 
 # Given a gram matrix semi-ring, normalize it
-def normalize(cov):
+def normalize(cov, kept_old= False):
     cols = []
     
     if isinstance(cov, pd.DataFrame):
@@ -33,8 +33,10 @@ def normalize(cov):
         if col != 'cov:c':
             cov[col] = cov[col]/cov['cov:c']
     
-    if isinstance(cov, pd.DataFrame):
-        cov.rename(columns={'cov:c':'cov:c_old'}, inplace=True)
+    if kept_old:
+        if isinstance(cov, pd.DataFrame):
+            # kept the old to estimate join result size
+            cov.rename(columns={'cov:c':'cov:c_old'}, inplace=True)
         
     cov['cov:c'] = 1
     return cov
@@ -69,7 +71,7 @@ class agg_dataset:
     # remove redundant columns not for ml
     def remove_redundant_columns(self):
         # project out attributes except x, y, dim
-        self.data.drop(self.data.columns.difference(self.X  + self.dedup_dimensions), axis=1, inplace=True)
+        self.data.drop(self.data.columns.difference(self.X  + self.dedup_dimensions), axis=1, inplace=False)
         # Note that the commented codes is not efficient, as it creates a view
         # self.data = self.data[self.X  + self.dedup_dimensions]
     
@@ -177,6 +179,14 @@ class agg_dataset:
         self.X.append("sq" + att)
 #         atts.append("cbr" + att)
     
+    # set small covariance values to be zero
+    # float has instability
+    def clean_covariance(self, tolerance = 1e-10):
+        for key in self.covariance.index:
+            if abs(self.covariance[key]) < tolerance:
+                self.covariance[key] = 0
+        
+        
     # build gram matrix semi-ring
     def lift(self, tablename, attributes):
         self.data['cov:c'] = 1
@@ -193,9 +203,11 @@ class agg_dataset:
         if agg_data.name in self.datasets:
             print("already absorbed this data")
             return
+        
+        self.keep_attributes(attrs)
             
         self.data = connect(self, agg_data, dimension, True, attrs)
-        
+        self.data.reset_index(inplace=True)
         for d in self.dimensions:
             if isinstance(d, list):
                 self.agg_dimensions[tuple(d)] = self.data[list(filter(lambda col: col.startswith("cov:"), self.data.columns)) + d].groupby(d).sum()
@@ -204,8 +216,25 @@ class agg_dataset:
             
         self.covariance = normalize(self.data[list(filter(lambda col: col.startswith("cov:"), self.data.columns))].sum())
         
-        self.X = self.X + attrs
+        self.X = attrs
         self.datasets.add(agg_data.name)
+    
+    # only keep the attributes in left_attrs
+    def keep_attributes(self, left_attrs):
+        kept_cols = []
+        for col in self.data.columns:
+            # cov has multiple names
+            if not col.startswith("cov:"):
+                continue
+            names = col[6:].split(",")
+            match = True
+            for name in names:
+                if name not in left_attrs:
+                    match = False
+            if match:
+                kept_cols.append(col)
+        self.data = self.data[kept_cols + ['cov:c'] + self.dedup_dimensions]
+        self.X = [x for x in left_attrs if x in self.X]
     
 # return the coefficients of features and a constant 
 def linear_regression(cov_matrix, features, result):
@@ -278,7 +307,8 @@ def adjusted_r2(cov_matrix, features, result, parameter):
 
 # left_inp is whether we join of index of aggdata1 (index has good performance. however no index during absorption)
 # specify right_attrs if for right table, only part of attributes are involved
-def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
+# average specify whether we use mean for missing value imputation
+def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = [],average=True, how = 'left'):
     
     if isinstance(dimension, list):
         dimension = tuple(dimension)
@@ -308,46 +338,57 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = []):
             if match:
                 kept_cols.append(col)
         agg2 = agg2[kept_cols + ['cov:c']]
-        right_attributes = right_attrs
+        right_attributes = [x for x in right_attrs if x in aggdata2.X]
+
     
     # wheter join on index
     if left_inp:
-        join = pd.merge(agg1.set_index(dimension), agg2, how='left', left_index=True, right_index=True)
+        join = pd.merge(agg1.set_index(dimension), agg2, how=how, left_index=True, right_index=True)
     else:
-        join = pd.merge(agg1, agg2, how='left', left_index=True, right_index=True)
+        join = pd.merge(agg1, agg2, how=how, left_index=True, right_index=True)
 #         join = pd.merge(agg1, agg2, how='inner', left_index=True, right_index=True)
-    join = join.drop('cov:c_y', 1)
-    join = join.rename(columns = {'cov:c_x':'cov:c'})
+    join.drop('cov:c_y', 1, inplace=True)
+    join.rename(columns = {'cov:c_x':'cov:c'}, inplace=True)
     
     right_cov = aggdata2.covariance
     
     # fill in nan
     for att2 in right_attributes:
         join['cov:s:' + att2].fillna(value=right_cov['cov:s:' + att2], inplace=True)
-        join['cov:s:' + att2] *= join['cov:c']
+    
+    
     
     for i in range(len(right_attributes)):
         for j in range(i, len(right_attributes)):
-            if 'cov:Q:' + right_attributes[i] + "," + right_attributes[j] in join:
-                join['cov:Q:' + right_attributes[i] + "," + right_attributes[j]].fillna(value=right_cov['cov:Q:' + right_attributes[i] + "," + right_attributes[j]], inplace=True)
-                join['cov:Q:' + right_attributes[i] + "," + right_attributes[j]] *= join['cov:c']
+            if average:
+                if 'cov:Q:' + right_attributes[i] + "," + right_attributes[j] in join:
+                    join['cov:Q:' + right_attributes[i] + "," + right_attributes[j]].fillna(value=right_cov['cov:Q:' + right_attributes[i] + "," + right_attributes[j]], inplace=True)
+                    join['cov:Q:' + right_attributes[i] + "," + right_attributes[j]] *= join['cov:c']
+                else:
+                    join['cov:Q:' + right_attributes[j] + "," + right_attributes[i]].fillna(value=right_cov['cov:Q:' + right_attributes[j] + "," + right_attributes[i]], inplace=True)
+                    join['cov:Q:' + right_attributes[j] + "," + right_attributes[i]] *= join['cov:c']
             else:
-                join['cov:Q:' + right_attributes[j] + "," + right_attributes[i]].fillna(value=right_cov['cov:Q:' + right_attributes[j] + "," + right_attributes[i]], inplace=True)
-                join['cov:Q:' + right_attributes[j] + "," + right_attributes[i]] *= join['cov:c']
+                if 'cov:Q:' + right_attributes[i] + "," + right_attributes[j] in join:
+                    join['cov:Q:' + right_attributes[i] + "," + right_attributes[j]] = join['cov:s:' + right_attributes[i]] * join['cov:s:' + right_attributes[j]] *  join['cov:c'] 
+                else:
+                    join['cov:Q:' + right_attributes[j] + "," + right_attributes[i]] = join['cov:s:' + right_attributes[i]] * join['cov:s:' + right_attributes[j]] *  join['cov:c']  
             
     
     
     for att1 in left_attributes:
         for att2 in right_attributes:
             if 'cov:Q:' + att1 + "," + att2 in join:
-                join['cov:Q:' + att1 + "," + att2] = join['cov:s:' + att1] * join['cov:s:' + att2]/join['cov:c']
+                join['cov:Q:' + att1 + "," + att2] = join['cov:s:' + att1] * join['cov:s:' + att2]
             else:
-                join['cov:Q:' + att2 + "," + att1] = join['cov:s:' + att2] * join['cov:s:' + att1]/join['cov:c']
+                join['cov:Q:' + att2 + "," + att1] = join['cov:s:' + att2] * join['cov:s:' + att1]
+                
+    for att2 in right_attributes:
+        join['cov:s:' + att2] *= join['cov:c']
     
     
     return join
 
-def select_features(train, test, seller, dimension, k, target):
+def select_features(train, test, seller, dimension, k, target, pca=False):
     join_test = connect(test, seller, dimension)
     join_train = connect(train, seller, dimension)
 
@@ -377,6 +418,10 @@ def select_features(train, test, seller, dimension, k, target):
         cur_atts = cur_atts + [best_att]
         final_r2 = best_r2
 #         print(i, best_r2, cur_atts)
+        
+        # pca only pick one 
+        if best_att in seller.X and pca:
+            return cur_atts, final_r2
     return cur_atts, final_r2
 
 
@@ -413,3 +458,112 @@ def split_mask(length):
 
 def cross_mask(length, classes):
     return np.random.choice(classes, length)
+
+class index:
+    def __init__(self, dim):
+        self.dim = dim
+        self.X = []
+        self.name = "index"
+        self.agg_dimensions = dict()
+        self.datasets = []
+        self.feature_sizes = []
+        
+    def absorb(self, agg_data):
+        if agg_data.name in self.datasets:
+            print("already absorbed this data")
+            return
+        
+        if self.dim not in self.agg_dimensions:
+            self.agg_dimensions[self.dim] = agg_data.agg_dimensions[self.dim]
+        else:
+            self.agg_dimensions[self.dim] = connect(self, agg_data, self.dim, how = 'outer')
+        
+        self.covariance = self.agg_dimensions[self.dim].sum()
+        
+        self.X = self.X + agg_data.X
+        self.datasets.append(agg_data.name)
+        self.feature_sizes.append(len(agg_data.X))
+    
+    def get_covariance_matrix(self):
+        # don't need to miuse the mean because all zero during standardization
+        a = np.empty([len(self.X), len(self.X)])
+    
+        for i in range(len(self.X)):
+            for j in range(len(self.X)):
+                if 'cov:Q:' + self.X[i] + ","+ self.X[j] in self.covariance:
+                    a[i][j] = self.covariance['cov:Q:' + self.X[i] + ","+ self.X[j]]
+                else:
+                    a[i][j] = self.covariance['cov:Q:' + self.X[j] + ","+ self.X[i]]
+        return a
+    
+    def compute_eigen_value(self):
+        # The eigenvalues returned by linalg.eig are columns vectors, so you need to iterate over the transpose of e_vecs (since iteration over a 2D array returns row vectors by default)!!
+        # https://stackoverflow.com/questions/18771486/incorrect-eigenvalues-vectors-with-numpy
+        eigen_values, eigen_vectors = np.linalg.eig(self.get_covariance_matrix())
+        # print("Eigenvector: \n",eigen_vectors,"\n")
+        # print("Eigenvalues: \n", eigen_values, "\n")
+        eigen_vectors = np.transpose(eigen_vectors)
+
+        # complex result due to numerical instabilityy
+        eigen_values, eigen_vectors = np.real(eigen_values), np.real(eigen_vectors)
+
+        # how much to pick depends on how much variance want to explain
+        variance_explained = []
+        for i in eigen_values:
+             variance_explained.append((i/sum(eigen_values))*100)
+
+        # print(variance_explained)
+        # find top n PC explains > 95 % of variance
+        variance_explained.sort(reverse=True)
+        csum = np.cumsum(variance_explained)
+        topn = 0
+        for i in range(len(csum)):
+            if csum[i] > 95:
+                topn = i + 1
+                break
+
+        # select top 10
+        topn = 10
+        idx = (-eigen_values).argsort()[:topn]
+        print(len(idx),"selected out of", len(eigen_vectors))
+        self.eigen_vectors = eigen_vectors[idx]
+        self.eigen_values = eigen_values[idx]
+    
+    def compute_pc_feature(self):
+        self.agg_dimensions[self.dim].fillna(0, inplace=True)
+        # filter columns that start with cov:s
+        filtered_cols = list(filter(lambda col: col.startswith("cov:s"), self.agg_dimensions["DBN"].columns)) 
+        filtered_df = self.agg_dimensions[self.dim][filtered_cols]
+        
+        pc = pd.DataFrame()
+
+        for i in range(len(self.eigen_vectors)):
+            eigen_vector = self.eigen_vectors[i]
+            for k in range(len(self.X)):
+                x = self.X[k]
+                if k == 0:
+                    pc["cov:s:f" + str(i)] = eigen_vector[k] * filtered_df['cov:s:' + x]
+                else:
+                    pc["cov:s:f" + str(i)] += eigen_vector[k] * filtered_df['cov:s:' + x]
+            
+        for i in range(len(self.eigen_vectors)):
+            for j in range(len(self.eigen_vectors)):
+                pc["cov:Q:f" + str(i) + ",f" + str(j)] = pc["cov:s:f" + str(i)] * pc["cov:s:f" + str(j)]
+        
+        pc["cov:c"] = 1
+        
+        self.agg_dimensions[self.dim] = pc
+        self.X = ["f" + str(i) for i in range(len(self.eigen_vectors))]
+        self.covariance = self.agg_dimensions[self.dim].sum()
+        
+        
+    def compute_seller_contribution(self):
+        self.datasets_weights = []
+        for i in range(len(self.eigen_vectors)):
+            cur_weight = []
+            cur_sum = 0
+            for j in range(len(self.feature_sizes)):
+                featurs_size = self.feature_sizes[j]
+                cur_sum += featurs_size
+                cur_weight.append(np.square(self.eigen_vectors[i])[range(cur_sum - featurs_size,cur_sum)].sum())
+            self.datasets_weights.append(cur_weight)
