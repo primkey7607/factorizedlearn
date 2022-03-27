@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import random
 import statistics
-import math
+from math import *
 from dateutil import parser
 from datetime import datetime
 from functools import reduce
@@ -71,7 +71,7 @@ class agg_dataset:
     # remove redundant columns not for ml
     def remove_redundant_columns(self):
         # project out attributes except x, y, dim
-        self.data.drop(self.data.columns.difference(self.X  + self.dedup_dimensions), axis=1, inplace=False)
+        self.data.drop(self.data.columns.difference(self.X  + self.dedup_dimensions), axis=1, inplace=True)
         # Note that the commented codes is not efficient, as it creates a view
         # self.data = self.data[self.X  + self.dedup_dimensions]
     
@@ -185,7 +185,12 @@ class agg_dataset:
         for key in self.covariance.index:
             if abs(self.covariance[key]) < tolerance:
                 self.covariance[key] = 0
-        
+    
+    # create a table to track the true count
+    # this is to eastimate the join result
+    def create_count_true(self):
+        self.count_true = self.data[self.dedup_dimensions].copy()
+        self.count_true['cov:c'] = 1
         
     # build gram matrix semi-ring
     def lift(self, tablename, attributes):
@@ -208,6 +213,8 @@ class agg_dataset:
             
         self.data = connect(self, agg_data, dimension, True, attrs)
         self.data.reset_index(inplace=True)
+        
+        
         for d in self.dimensions:
             if isinstance(d, list):
                 self.agg_dimensions[tuple(d)] = self.data[list(filter(lambda col: col.startswith("cov:"), self.data.columns)) + d].groupby(d).sum()
@@ -305,9 +312,28 @@ def r2(cov_matrix, features, result, parameter):
 def adjusted_r2(cov_matrix, features, result, parameter):
     return 1 - (cov_matrix['cov:c']-1)*(1 - r2(cov_matrix, features, result, parameter))/(cov_matrix['cov:c'] - len(parameter) - 1)
 
+def connect_count(aggdata1, aggdata2, dimension, how = 'left'):
+    if isinstance(dimension, tuple):
+        dimension_list = list(dimension)
+    else:
+        dimension_list = dimension
+    
+    agg1 = aggdata1.count_true  
+    agg2 = aggdata2.count_true.groupby(dimension_list).sum()
+    
+    join = pd.merge(agg1.set_index(dimension_list), agg2, how=how, left_index=True, right_index=True)
+    
+    join['cov:c_y'].fillna(1,inplace=True)
+    join['cov:c'] = join['cov:c_x'] * join['cov:c_y']
+    join.drop('cov:c_x', 1, inplace=True)
+    join.drop('cov:c_y', 1, inplace=True)
+    return join
+    
+
 # left_inp is whether we join of index of aggdata1 (index has good performance. however no index during absorption)
 # specify right_attrs if for right table, only part of attributes are involved
 # average specify whether we use mean for missing value imputation
+# return a pandas dataframe of join result
 def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = [],average=True, how = 'left'):
     
     if isinstance(dimension, list):
@@ -315,8 +341,11 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = [],av
     
     if left_inp:
         agg1 = aggdata1.data
+
     else:
         agg1 = aggdata1.agg_dimensions[dimension]
+
+        
         
     agg2 = aggdata2.agg_dimensions[dimension]
     
@@ -343,7 +372,11 @@ def connect(aggdata1, aggdata2, dimension, left_inp = False, right_attrs = [],av
     
     # wheter join on index
     if left_inp:
-        join = pd.merge(agg1.set_index(dimension), agg2, how=how, left_index=True, right_index=True)
+        # if it's a tuple
+        if isinstance(dimension, str):
+            join = pd.merge(agg1.set_index(dimension), agg2, how=how, left_index=True, right_index=True)
+        else:
+            join = pd.merge(agg1.set_index(list(dimension)), agg2, how=how, left_index=True, right_index=True)
     else:
         join = pd.merge(agg1, agg2, how=how, left_index=True, right_index=True)
 #         join = pd.merge(agg1, agg2, how='inner', left_index=True, right_index=True)
@@ -567,3 +600,80 @@ class index:
                 cur_sum += featurs_size
                 cur_weight.append(np.square(self.eigen_vectors[i])[range(cur_sum - featurs_size,cur_sum)].sum())
             self.datasets_weights.append(cur_weight)
+            
+            
+def correlation(join_cov, att1, att2):
+    count = join_cov['cov:c']
+    sum_att1 = join_cov['cov:s:' + att1]
+    sum_att1_sqmean = sum_att1*sum_att1
+    sum_att2 = join_cov['cov:s:' + att2]
+    sum_att2_sqmean = sum_att2*sum_att2
+    sum_att1_att2_sqmean = sum_att1*sum_att2
+    sum_att1_att1 = join_cov["cov:Q:" + att1 + "," + att1]
+    sum_att2_att2 = join_cov["cov:Q:" + att2 + "," + att2]
+    if "cov:Q:" + att1 + "," + att2 in join_cov:
+        sum_att1_att2 = join_cov["cov:Q:" + att1 + "," + att2]
+    else:
+        sum_att1_att2 = join_cov["cov:Q:" + att2 + "," + att1]
+    return (count * sum_att1_att2 - sum_att1_att2_sqmean)/sqrt((count * sum_att1_att1 - sum_att1_sqmean)*(count * sum_att2_att2 - sum_att2_sqmean))
+
+# left_inp is whether we join of index of aggdata1 (index has good performance. however no index during absorption)
+# specify right_attrs if for right table, only part of attributes are involved
+# average specify whether we use mean for missing value imputation
+# return a pandas dataframe of join result
+def connect_correlation(aggdata1, aggdata2, dimension, y, left_inp = False,average=True, how = 'left'):
+    if isinstance(dimension, list):
+        dimension = tuple(dimension)
+    
+    if left_inp:
+        agg1 = aggdata1.data
+    else:
+        agg1 = aggdata1.agg_dimensions[dimension]        
+        
+    agg2 = aggdata2.agg_dimensions[dimension]
+    
+    left_attributes = [y]
+    left_tablename = aggdata1.name
+    right_attributes = aggdata2.X
+    right_tablename = aggdata2.name
+    
+    agg1 = agg1[["cov:s:" + y, "cov:Q:" + y + "," + y, "cov:c"]]
+    
+    kept_cols = []
+    for col in right_attributes:
+        kept_cols.append("cov:s:" + col)
+        kept_cols.append("cov:Q:" + col + "," + col)
+        
+    agg2 = agg2[kept_cols]
+    
+    # wheter join on index
+    if left_inp:
+        # if it's a tuple
+        if isinstance(dimension, str):
+            join = pd.merge(agg1.set_index(dimension), agg2, how=how, left_index=True, right_index=True)
+        else:
+            join = pd.merge(agg1.set_index(list(dimension)), agg2, how=how, left_index=True, right_index=True)
+    else:
+        join = pd.merge(agg1, agg2, how=how, left_index=True, right_index=True)
+    
+    right_cov = aggdata2.covariance
+    
+    # fill in nan
+    for att2 in right_attributes:
+        join['cov:s:' + att2].fillna(value=right_cov['cov:s:' + att2], inplace=True)
+        join['cov:s:' + att2] *= join['cov:c']
+        
+    
+    if average:
+        for col in right_attributes:
+            join['cov:Q:' + col + "," + col].fillna(value=right_cov['cov:s:' + col]*right_cov['cov:s:' + col], inplace=True)
+            join['cov:Q:' + col + "," + col] *= join['cov:c']
+    
+    for att1 in left_attributes:
+        for att2 in right_attributes:
+            if 'cov:Q:' + att1 + "," + att2 in join:
+                join['cov:Q:' + att1 + "," + att2] = join['cov:s:' + att1] * join['cov:s:' + att2]/join['cov:c']
+            else:
+                join['cov:Q:' + att2 + "," + att1] = join['cov:s:' + att2] * join['cov:s:' + att1]/join['cov:c']
+    
+    return join
