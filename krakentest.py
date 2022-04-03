@@ -43,6 +43,7 @@ def linear_sanitycheck(dirname):
         #now, train regression
         excols = ['f4k', 'f109k']
         excols += [c for c in joindf.columns if 'event_id' in c]
+        excols += ['result']
         X = joindf.loc[:, ~joindf.columns.isin(excols)]
         y = joindf['result']
         jtestdf = b_test.merge(newdf, left_index=True, right_index=True)
