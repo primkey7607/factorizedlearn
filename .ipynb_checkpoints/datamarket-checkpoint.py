@@ -27,6 +27,7 @@ def normalize(cov, kept_old= False):
         cols = cov.columns
     # this is for the final semiring, which is reduced to a single np array
     else:
+        cov = cov.astype(float)
         cols = list(cov.axes[0])
         
     for col in cols:
