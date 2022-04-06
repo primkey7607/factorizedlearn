@@ -36,7 +36,7 @@ def linear_sanitycheck(dirname, tbl_name, bname):
     #buyer_ds = buyer_ds.dropna(axis=1, how='all')
     #buyer_ds = buyer_ds.dropna(axis=0)
     buyer_ds = buyer_ds.select_dtypes(include=[np.number])
-    buyer_ds.replace(np.nan, 0, inplace=True)
+    buyer_ds.replace([np.inf, -np.inf, np.nan], 0, inplace=True)
 
     # train test split
     msk = split_mask(len(buyer_ds)) < 0.8
@@ -65,7 +65,7 @@ def linear_sanitycheck(dirname, tbl_name, bname):
     for i,t in enumerate(t_files):
         newdf = pd.read_csv(t, nrows=1000, encoding='cp1252')
         newdf = newdf.select_dtypes(include=[np.number])
-        newdf.replace(np.nan, 0, inplace=True)
+        newdf.replace([np.inf, -np.inf, np.nan], 0, inplace=True)
         X_new = newdf.loc[:, ~newdf.columns.isin(excols)]
         y_new = newdf['Residents Total Confirmed COVID-19']
         unionX = pd.concat([X_b, X_new])
