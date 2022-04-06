@@ -100,7 +100,7 @@ for i in range(m):
         cur_atts, final_r2 = select_features(taxi_train_data, taxi_test_data, sellerdata, dimension, 4, y)
 #         cur_atts, final_r2 = select_features(gender_train, gender_test, sellerdata, dimension,10)
 
-        if final_r2 > best_r2:
+        if final_r2 >= best_r2:
             best_seller = sellerdata
             best_dimension = dimension
             best_seller_attrs = cur_atts
