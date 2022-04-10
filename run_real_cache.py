@@ -103,6 +103,9 @@ def find_optimal_plan(bfile, enc=False):
                 continue
 
             # find the attributes and r2 of augmenting
+            #...but obviously, if we can't join with a dataset, we need to avoid it, right?
+            if dimension not in buyer_train_data.agg_dimensions:
+                continue
             cur_atts, final_r2 = select_features(buyer_train_data, buyer_test_data, sellerdata, dimension, 6, y)
     #         cur_atts, final_r2 = select_features(buyer_train, buyer_test, sellerdata, dimension,10)
             print(cur_atts, final_r2)
