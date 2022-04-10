@@ -191,14 +191,14 @@ def cache_optimal_plan(bfile, cache_state=None):
     return cache
         
 
-num_reps = 2
-start = time.time()
-for i in range(num_reps):
-    find_optimal_plan('gender.csv')
-    #find_optimal_plan("NH_SurveySummary_Mar2022.csv", enc=True)
-end = time.time()
-tot_runtime = end - start
-print("original gender runtime: {}".format(tot_runtime))
+# num_reps = 2
+# start = time.time()
+# for i in range(num_reps):
+#     find_optimal_plan('gender.csv')
+#     #find_optimal_plan("NH_SurveySummary_Mar2022.csv", enc=True)
+# end = time.time()
+# tot_runtime = end - start
+# print("original gender runtime: {}".format(tot_runtime))
 
 tot_ctime = 0.0
 for i in range(num_reps):
