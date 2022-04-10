@@ -1,4 +1,6 @@
 from datamarket import *
+from request_cache import RequestCache
+import pickle as pkl
 import json
 import time
 
@@ -88,6 +90,7 @@ def find_optimal_plan(bfile, enc=False):
         y = 'Total Number of Health Deficiencies'
     
     m = 3
+    aug_plan = []
 
     for i in range(m):
         best_seller = None
@@ -114,9 +117,14 @@ def find_optimal_plan(bfile, enc=False):
                 best_dimension = dimension
                 best_seller_attrs = cur_atts
                 best_r2 = final_r2
-
-
+        
         print(best_seller.name, best_seller_attrs, best_r2)
+        aug_plan.append((best_dimension, best_seller_attrs))
+
+        # if best_seller != None:
+        #     print(best_seller.name, best_seller_attrs, best_r2)
+        # else:
+        #     print("No best seller found...")
         
         if len([x for x in best_seller_attrs if x in best_seller.X]) == 0:
             buyer_train_data.datasets.add(best_seller)
@@ -124,14 +132,91 @@ def find_optimal_plan(bfile, enc=False):
         else:
             buyer_train_data.absorb(best_seller, best_dimension, best_seller_attrs + [buyer_train_data.name + ":" + y])
             buyer_test_data.absorb(best_seller, best_dimension, best_seller_attrs + [buyer_train_data.name + ":" + y])
+    return aug_plan
+    
+
+def cache_optimal_plan(bfile, cache_state=None):
+    #initialize the cache...
+    if cache_state == None:
+        cache = RequestCache(1)
+    else:
+        cache = cache_state
+    
+    buyerdf = pd.read_csv(bfile)
+    b_schema = tuple(buyerdf.columns.tolist())
+    aug_plan = cache.read_el(b_schema)
+    if aug_plan != None:
+        best_r2 = 0.0
+        use_aug = True
+        for jk, attrs in aug_plan:
+            s_match = [s[0] for s in sellers if jk == s[1]][0]
+            msk = split_mask(len(buyer)) < 0.8
+            b_train = buyerdf[msk].copy()
+            b_test = buyerdf[~msk].copy()
+      
+            b_train_data = agg_dataset()
+            b_keys = [b for b in buyerdf.columns.tolist() if b != 'result']
+            b_train_data.load(b_train, [], b_keys, "buyer" + str(i))
+            b_train_data.process_target("result")
+            b_train_data.to_numeric_and_impute_all()
+            b_train_data.remove_redundant_columns()
+            b_train_data.create_count_true()
+            b_train_data.compute_agg()
+      
+            b_test_data = agg_dataset()
+            b_test_data.load(b_test, [], b_keys, "buyer" + str(i))
+            b_test_data.process_target("result")
+            b_test_data.to_numeric_and_impute_all()
+            b_test_data.remove_redundant_columns()
+            b_test_data.create_count_true()
+            b_test_data.compute_agg()
+            # find the attributes and r2 of augmenting
+            cur_atts, final_r2 = select_features(b_train_data, b_test_data, s_match, jk, 4, 'result')
+      
+            #this is a check to see if our r2 is really improving.
+            #if we find out it's not, then this augmentation plan is no good, and we need to move to 
+            if final_r2 > best_r2:
+              best_r2 = final_r2
+            else:
+              use_aug = False
+              break
+    
+        if not use_aug:
+            opt_aug = find_optimal_plan(bfile)
+            cache.add_el(b_schema, opt_aug)
+    else:
+        opt_aug = find_optimal_plan(bfile)
+        cache.add_el(b_schema, opt_aug)
+    
+    return cache
+        
 
 num_reps = 2
 start = time.time()
 for i in range(num_reps):
-    #find_optimal_plan('gender.csv')
-    find_optimal_plan("NH_SurveySummary_Mar2022.csv", enc=True)
+    find_optimal_plan('gender.csv')
+    #find_optimal_plan("NH_SurveySummary_Mar2022.csv", enc=True)
 end = time.time()
 tot_runtime = end - start
-    
+print("original gender runtime: {}".format(tot_runtime))
+
+tot_ctime = 0.0
+for i in range(num_reps):
+    if i == 0:
+        c_start = time.time()
+        new_state = cache_optimal_plan('gender.csv')
+        c_end = time.time()
+        tot_ctime += c_end - c_start
+        pkl.dump(new_state, open("cache_state.pkl", "w"))
+    else:
+        #we read the file in here so we don't hav
+        with open('cache_state.pkl', 'rb') as f:
+            cache_state = pkl.load(f)
+        c_start = time.time()
+        cache_optimal_plan('gender.csv', cache_state)
+        c_end = time.time()
+        tot_ctime += c_end - c_start
+        
+print("cached gender runtime: {}".format(tot_ctime))
 
 
