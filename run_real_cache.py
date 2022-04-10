@@ -62,7 +62,30 @@ def find_optimal_plan(bfile, enc=False):
         buyer_test_data.remove_redundant_columns()
         buyer_test_data.compute_agg()
         y = 'Mean Scale Score'
-    #TODO: do other cases for the other 3 buyer datasets we can use.
+    
+    if 'SurveySummary' in bfile:
+        msk = split_mask(len(buyer)) < 0.8
+        buyer_train = buyer[msk].copy()
+        buyer_test = buyer[~msk].copy()
+        
+        buyer_train_data = agg_dataset()
+        buyer_train_data.load(buyer_train, ['Total Number of Health Deficiencies','Total Number of Fire Safety Deficiencies'], ["Federal Provider Number", 'Location', 'Processing Date'], "buyer")
+        buyer_train_data.process_target('Total Number of Health Deficiencies')
+        # buyer_train_data.load(buyer_train, ['Percent Vaccinated Residents'], ["Federal Provider Number", 'Provider State'], "buyer")
+        # buyer_train_data.process_target('Percent Vaccinated Residents')
+        buyer_train_data.to_numeric_and_impute_all()
+        buyer_train_data.remove_redundant_columns()
+        buyer_train_data.compute_agg()
+    
+        buyer_test_data = agg_dataset()
+        buyer_test_data.load(buyer_test, ['Total Number of Health Deficiencies','Total Number of Fire Safety Deficiencies'], ["Federal Provider Number", 'Location', 'Processing Date'], "buyer")
+        buyer_test_data.process_target('Total Number of Health Deficiencies')
+        # buyer_test_data.load(buyer_test, ['Percent Vaccinated Residents'], ["Federal Provider Number", 'Provider State'], "buyer")
+        # buyer_test_data.process_target('Percent Vaccinated Residents')
+        buyer_test_data.to_numeric_and_impute_all()
+        buyer_test_data.remove_redundant_columns()
+        buyer_test_data.compute_agg()
+        y = 'Total Number of Health Deficiencies'
     
     m = 3
 
@@ -103,6 +126,8 @@ num_reps = 2
 start = time.time()
 for i in range(num_reps):
     find_optimal_plan('gender.csv')
+end = time.time()
+tot_runtime = end - start
     
 
 
