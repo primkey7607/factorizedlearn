@@ -207,7 +207,7 @@ for i in range(num_reps):
         new_state = cache_optimal_plan('gender.csv')
         c_end = time.time()
         tot_ctime += c_end - c_start
-        pkl.dump(new_state, open("cache_state.pkl", "w"))
+        pkl.dump(new_state, open("cache_state.pkl", "wb+"))
     else:
         #we read the file in here so we don't hav
         with open('cache_state.pkl', 'rb') as f:
