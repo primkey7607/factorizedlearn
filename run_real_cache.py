@@ -11,7 +11,13 @@ with open('market_data.json', 'r') as openfile:
 
 sellers = []
 
+#ind = 0
+#limit = 10
 for data in market_data:
+    # if ind > limit:
+    #     break
+    # else:
+    #     ind += 1
     file, dimension, name = data
     df = pd.read_csv(file)
     aggdata = agg_dataset()
@@ -141,57 +147,78 @@ def cache_optimal_plan(bfile, cache_state=None):
         cache = RequestCache(1)
     else:
         cache = cache_state
+        print(cache_state)
     
     buyerdf = pd.read_csv(bfile)
     b_schema = tuple(buyerdf.columns.tolist())
     aug_plan = cache.read_el(b_schema)
+    print("Cache count before: {}".format(cache.cnt))
     if aug_plan != None:
+        print("Number of augmentations to make: {}".format(len(aug_plan)))
         best_r2 = 0.0
         use_aug = True
         for jk, attrs in aug_plan:
-            s_match = [s[0] for s in sellers if jk == s[1]][0]
-            msk = split_mask(len(buyer)) < 0.8
-            b_train = buyerdf[msk].copy()
-            b_test = buyerdf[~msk].copy()
-      
-            b_train_data = agg_dataset()
-            b_keys = [b for b in buyerdf.columns.tolist() if b != 'result']
-            b_train_data.load(b_train, [], b_keys, "buyer" + str(i))
-            b_train_data.process_target("result")
-            b_train_data.to_numeric_and_impute_all()
-            b_train_data.remove_redundant_columns()
-            b_train_data.create_count_true()
-            b_train_data.compute_agg()
-      
-            b_test_data = agg_dataset()
-            b_test_data.load(b_test, [], b_keys, "buyer" + str(i))
-            b_test_data.process_target("result")
-            b_test_data.to_numeric_and_impute_all()
-            b_test_data.remove_redundant_columns()
-            b_test_data.create_count_true()
-            b_test_data.compute_agg()
-            # find the attributes and r2 of augmenting
-            cur_atts, final_r2 = select_features(b_train_data, b_test_data, s_match, jk, 4, 'result')
-      
-            #this is a check to see if our r2 is really improving.
-            #if we find out it's not, then this augmentation plan is no good, and we need to move to 
-            if final_r2 > best_r2:
-              best_r2 = final_r2
-            else:
-              use_aug = False
-              break
+            s_matches = [s[0] for s in sellers if jk == s[1]]
+            msk = split_mask(len(buyerdf)) < 0.8
+            buyer_train = buyerdf[msk].copy()
+            buyer_test = buyerdf[~msk].copy()
+        
+            buyer_train_data = agg_dataset()
+            buyer_train_data.load(buyer_train, ["Number Tested", "Mean Scale Score"], ["DBN", ["DBN","Grade"], "Year", "Category"], "buyer")
+            buyer_train_data.process_target("Mean Scale Score")
+            # buyer_train_data.load(buyer_train, ['Total Number of Health Deficiencies','Total Number of Fire Safety Deficiencies'], ["Federal Provider Number", 'Location', 'Processing Date'], "buyer")
+            # buyer_train_data.process_target('Total Number of Health Deficiencies')
+            # buyer_train_data.load(buyer_train, ['Percent Vaccinated Residents'], ["Federal Provider Number", 'Provider State'], "buyer")
+            # buyer_train_data.process_target('Percent Vaccinated Residents')
+            buyer_train_data.to_numeric_and_impute_all()
+            buyer_train_data.remove_redundant_columns()
+            buyer_train_data.compute_agg()
+        
+            buyer_test_data = agg_dataset()
+            buyer_test_data.load(buyer_test, ["Number Tested", "Mean Scale Score"], ["DBN", ["DBN","Grade"], "Year", "Category"], "buyer")
+            buyer_test_data.process_target("Mean Scale Score")
+            # buyer_test_data.load(buyer_test, ['Total Number of Health Deficiencies','Total Number of Fire Safety Deficiencies'], ["Federal Provider Number", 'Location', 'Processing Date'], "buyer")
+            # buyer_test_data.process_target('Total Number of Health Deficiencies')
+            # buyer_test_data.load(buyer_test, ['Percent Vaccinated Residents'], ["Federal Provider Number", 'Provider State'], "buyer")
+            # buyer_test_data.process_target('Percent Vaccinated Residents')
+            buyer_test_data.to_numeric_and_impute_all()
+            buyer_test_data.remove_redundant_columns()
+            buyer_test_data.compute_agg()
+            y = 'Mean Scale Score'
+            
+            for j, s_match in enumerate(s_matches):
+                if j > 0:
+                    break
+                # find the attributes and r2 of augmenting
+                cur_atts, final_r2 = select_features(buyer_train_data, buyer_test_data, s_match, jk, 4, y)
+          
+                #this is a check to see if our r2 is really improving.
+                #if we find out it's not, then this augmentation plan is no good, and we need to move to 
+                if final_r2 > best_r2:
+                  best_r2 = final_r2
+                
+                buyer_train_data.absorb(s_match, jk, cur_atts + [buyer_train_data.name + ":" + y])
+                buyer_test_data.absorb(s_match, jk, cur_atts + [buyer_train_data.name + ":" + y])
+        
+        #once we've executed the plan, check the r2
+        if final_r2 <= 0:
+            use_aug = False
     
         if not use_aug:
+            print("Augmentation plan failed--finding optimal plan manually")
             opt_aug = find_optimal_plan(bfile)
+            print("Cache count just before: {}".format(cache.cnt))
             cache.add_el(b_schema, opt_aug)
+            print("Cache count immediately after: {}".format(cache.cnt))
     else:
         opt_aug = find_optimal_plan(bfile)
         cache.add_el(b_schema, opt_aug)
+        print("Cache count first time after: {}".format(cache.cnt))
     
     return cache
         
 
-# num_reps = 2
+num_reps = 2
 # start = time.time()
 # for i in range(num_reps):
 #     find_optimal_plan('gender.csv')
@@ -206,6 +233,7 @@ for i in range(num_reps):
         c_start = time.time()
         new_state = cache_optimal_plan('gender.csv')
         c_end = time.time()
+        print("Before-cache runtime: {}".format(c_end - c_start))
         tot_ctime += c_end - c_start
         pkl.dump(new_state, open("cache_state.pkl", "wb+"))
     else:
@@ -215,8 +243,8 @@ for i in range(num_reps):
         c_start = time.time()
         cache_optimal_plan('gender.csv', cache_state)
         c_end = time.time()
+        print("Cached runtime: {}".format(c_end - c_start))
         tot_ctime += c_end - c_start
-        
-print("cached gender runtime: {}".format(tot_ctime))
+print("cache gender runtime: {}".format(tot_ctime))
 
 

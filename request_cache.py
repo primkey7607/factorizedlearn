@@ -40,9 +40,6 @@ class RequestCache:
     #the aug plan is specified as a dictionary, where key is the join key to a seller table,
     #and the value is the set of attributes to use
     def add_el(self, schema : tuple, aug_plan : list):
-      if self.cnt >= self.cache_size:
-        raise Exception("add_el on full cache")
-      
       self.cdict[schema] = (aug_plan, 1)
       self.cnt += 1
 
